@@ -41,6 +41,7 @@ class TLSCertificate(Document):
 		)
 		frappe.set_user(user)
 		frappe.session.data = session_data
+		frappe.db.commit()
 
 	@frappe.whitelist()
 	def _obtain_certificate(self):
