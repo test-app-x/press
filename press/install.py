@@ -15,14 +15,13 @@ def create_administrator_team():
 	administrator_team = frappe.get_doc(
 		{
 			"doctype": "Team",
-			"name": "Administrator",
 			"user": "Administrator",
 			"enabled": 1,
 			"free_account": 1,
 			"team_members": [{"user": "Administrator"}],
 		}
 	)
-	administrator_team.insert()
+	administrator_team.insert(set_name="Administrator")
 
 
 def create_default_cluster():
