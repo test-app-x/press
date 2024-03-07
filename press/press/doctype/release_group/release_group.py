@@ -330,9 +330,9 @@ class ReleaseGroup(Document, TagHelpers):
 	def validate_app_versions(self):
 		# App Source should be compatible with Release Group's version
 		with suppress(AttributeError):
-			if (
-				not frappe.flags.in_test
-				and frappe.request.path == "/api/method/press.api.bench.change_branch"
+			if not frappe.flags.in_test and (
+				hasattr(frappe.local, "request")
+				and frappe.frappe.request.path == "/api/method/press.api.bench.change_branch"
 			):
 				return  # Separate validation exists in set_app_source
 		for app in self.apps:
