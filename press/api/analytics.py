@@ -25,6 +25,10 @@ from press.press.report.binary_log_browser.binary_log_browser import (
 	get_files_in_timespan,
 	convert_user_timezone_to_utc,
 )
+from press.press.report.mariadb_slow_queries.mariadb_slow_queries import (
+	execute,
+	analyze_queries,
+)
 
 
 try:
