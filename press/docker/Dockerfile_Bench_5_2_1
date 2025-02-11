@@ -153,6 +153,9 @@ ENV PYTHONUNBUFFERED 1
 
 # Install Frappe app
 RUN echo '["build"]' > .bench.cmd
+# Add Git safe directory configuration before fetching Frappe app
+RUN git config --global --add safe.directory /home/frappe/context/apps/frappe/.git
+
 RUN --mount=type=cache,target=/home/frappe/.cache,uid=1000,gid=1000 --mount=type=bind,source=apps/frappe,target=/home/frappe/context/apps/frappe bench get-app /home/frappe/context/apps/frappe `#stage-apps-frappe`
 RUN rm .bench.cmd
 
