@@ -857,6 +857,11 @@ class DeployCandidate(Document):
 			app.use_cached = bool(self.use_app_cache)
 
 	def _prepare_build_directory(self):
+		    # Ensure the directory is marked as safe for Git
+		subprocess.run(
+        		["git", "config", "--global", "--add", "safe.directory", "/home/frappe/context/apps/frappe"],
+        		check=True,
+    		)
 		build_directory = frappe.get_value("Press Settings", None, "build_directory")
 		if not os.path.exists(build_directory):
 			os.mkdir(build_directory)
