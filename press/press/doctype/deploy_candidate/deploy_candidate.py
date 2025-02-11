@@ -859,7 +859,7 @@ class DeployCandidate(Document):
 	def _prepare_build_directory(self):
 		    # Ensure the directory is marked as safe for Git
 		subprocess.run(
-        		["git", "config", "--global", "--add", "safe.directory", "/home/frappe/context/apps/frappe"],
+        		["git", "config", "--add", "safe.directory", "/home/frappe/context/apps/frappe"],
         		check=True,
     		)
 		build_directory = frappe.get_value("Press Settings", None, "build_directory")
