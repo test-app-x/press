@@ -989,7 +989,7 @@ class DeployCandidate(Document):
 
 		if not self.build_directory:
 			raise frappe.ValidationError("Build Directory not set")
-		step.command = f"git config --global --add safe.directory /home/frappe/context/apps/frappe"
+		step.command = f"git config --global --add safe.directory /home/frappe/context/apps/frappe/.git"
 		step.command = f"git clone {app.app}"
 		source, cloned = frappe.db.get_value(
 			"App Release",
