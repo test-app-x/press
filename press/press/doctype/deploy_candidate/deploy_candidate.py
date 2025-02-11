@@ -940,11 +940,7 @@ class DeployCandidate(Document):
 		apps_directory = os.path.join(self.build_directory, "apps")
 		os.makedirs(apps_directory, exist_ok=True)
 
-		repo_path_map: dict[str, str] = {}
-		
-		# Ensure the directory is marked as safe for Git
-		subprocess.run(['git', 'config', '--add', 'safe.directory', '/home/frappe/frappe-bench/apps/frappe'],check=True, capture_output=True, text=True)
-
+		repo_path_map: dict[str, str] = {}		
 		for app in self.apps:
 			repo_path_map[app.app] = self._clone_app_repo(app)
 			app.app_name = self._get_app_name(app.app)
@@ -993,7 +989,7 @@ class DeployCandidate(Document):
 
 		if not self.build_directory:
 			raise frappe.ValidationError("Build Directory not set")
-
+		step.command = f"git config --global --add safe.directory /home/frappe/context/apps/frappe"
 		step.command = f"git clone {app.app}"
 		source, cloned = frappe.db.get_value(
 			"App Release",
