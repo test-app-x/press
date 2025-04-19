@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import shlex
 import typing
+from contextlib import suppress
 from datetime import timedelta
 from functools import cached_property
 
@@ -16,6 +17,7 @@ from frappe.core.utils import find, find_all
 from frappe.installer import subprocess
 from frappe.model.document import Document
 from frappe.utils import cint
+from frappe.utils.synchronization import filelock
 from frappe.utils.user import is_system_user
 
 from press.agent import Agent
@@ -28,7 +30,9 @@ from press.telegram_utils import Telegram
 from press.utils import fmt_timedelta, log_error
 
 if typing.TYPE_CHECKING:
+	from press.press.doctype.ansible_play.ansible_play import AnsiblePlay
 	from press.press.doctype.bench.bench import Bench
+	from press.press.doctype.release_group.release_group import ReleaseGroup
 	from press.press.doctype.virtual_machine.virtual_machine import VirtualMachine
 
 
@@ -94,6 +98,7 @@ class BaseServer(Document, TagHelpers):
 			{"primary": doc.database_server, "is_replication_setup": 1},
 			"name",
 		)
+		doc.owner_email = frappe.db.get_value("Team", self.team, "user")
 
 		return doc
 
@@ -223,6 +228,10 @@ class BaseServer(Document, TagHelpers):
 	def create_dns_record(self):
 		try:
 			domain = frappe.get_doc("Root Domain", self.domain)
+
+			if domain.generic_dns_provider:
+				return
+
 			client = boto3.client(
 				"route53",
 				aws_access_key_id=domain.aws_access_key_id,
@@ -252,11 +261,19 @@ class BaseServer(Document, TagHelpers):
 		except Exception:
 			log_error("Route 53 Record Creation Error", domain=domain.name, server=self.name)
 
+	def add_server_to_public_groups(self):
+		groups = frappe.get_all("Release Group", {"public": True, "enabled": True}, "name")
+		for group_name in groups:
+			group: ReleaseGroup = frappe.get_doc("Release Group", group_name)
+			with suppress(frappe.ValidationError):
+				group.add_server(str(self.name), deploy=True)
+
 	@frappe.whitelist()
 	def enable_server_for_new_benches_and_site(self):
 		if not self.public:
 			frappe.throw("Action only allowed for public servers")
 
+		self.add_server_to_public_groups()
 		server = self.get_server_enabled_for_new_benches_and_sites()
 
 		if server:
@@ -279,7 +296,7 @@ class BaseServer(Document, TagHelpers):
 				"public": True,
 				"cluster": self.cluster,
 			},
-			pluck="name",
+			pluck=True,
 		)
 
 	@frappe.whitelist()
@@ -324,7 +341,10 @@ class BaseServer(Document, TagHelpers):
 
 	@frappe.whitelist()
 	def prepare_server(self):
-		frappe.enqueue_doc(self.doctype, self.name, "_prepare_server", queue="long", timeout=2400)
+		if self.provider == "Generic":
+			self._prepare_server()
+		else:
+			frappe.enqueue_doc(self.doctype, self.name, "_prepare_server", queue="long", timeout=2400)
 
 	def _prepare_server(self):
 		try:
@@ -343,8 +363,9 @@ class BaseServer(Document, TagHelpers):
 				ansible = Ansible(playbook="aws.yml", server=self, user="ubuntu")
 			elif self.provider == "OCI":
 				ansible = Ansible(playbook="oci.yml", server=self, user="ubuntu")
+			if self.provider != "Generic":
+				ansible.run()
 
-			ansible.run()
 			self.reload()
 			self.is_server_prepared = True
 			self.save()
@@ -564,7 +585,7 @@ class BaseServer(Document, TagHelpers):
 		return diff if diff < timedelta(hours=6) else 0
 
 	@frappe.whitelist()
-	def increase_disk_size(self, increment=50, mountpoint=None) -> bool:
+	def increase_disk_size(self, increment=50, mountpoint=None):
 		if self.provider not in ("AWS EC2", "OCI"):
 			return
 		if self.provider == "AWS EC2" and self.time_to_wait_before_updating_volume:
@@ -846,24 +867,14 @@ class BaseServer(Document, TagHelpers):
 		frappe.enqueue_doc(
 			self.doctype,
 			self.name,
-			"_increase_swap",
+			"increase_swap_locked",
 			queue="long",
 			timeout=1200,
 			**{"swap_size": swap_size},
 		)
 
-	def add_glass_file(self):
-		frappe.enqueue_doc(self.doctype, self.name, "_add_glass_file")
-
-	def _add_glass_file(self):
-		try:
-			ansible = Ansible(playbook="glass_file.yml", server=self)
-			ansible.run()
-		except Exception:
-			log_error("Add Glass File Exception", doc=self)
-
 	def _increase_swap(self, swap_size=4):
-		"""Increase swap by size defined in playbook"""
+		"""Increase swap by size defined"""
 		from press.api.server import calculate_swap
 
 		existing_swap_size = calculate_swap(self.name).get("swap", 0)
@@ -881,6 +892,57 @@ class BaseServer(Document, TagHelpers):
 			ansible.run()
 		except Exception:
 			log_error("Increase swap exception", doc=self)
+
+	def increase_swap_locked(self, swap_size=4):
+		with filelock(f"{self.name}-swap-update"):
+			self._increase_swap(swap_size)
+
+	@frappe.whitelist()
+	def reset_swap(self, swap_size=1):
+		"""
+		Replace existing swap files with new swap file of given size
+		"""
+		frappe.enqueue_doc(
+			self.doctype,
+			self.name,
+			"reset_swap_locked",
+			queue="long",
+			timeout=1200,
+			**{"swap_size": swap_size},
+		)
+
+	def reset_swap_locked(self, swap_size=1):
+		with filelock(f"{self.name}-swap-update"):
+			self._reset_swap(swap_size)
+
+	def _reset_swap(self, swap_size=1):
+		"""Reset swap by removing existing swap files and creating new swap"""
+		# list of swap files to remove assuming minimum swap size of 1 GB to be safe. Wrong names are handled in playbook
+		swap_files_to_remove = ["swap.default", "swap"]
+		swap_files_to_remove += ["swap" + str(i) for i in range(1, 30)]
+		try:
+			ansible = Ansible(
+				playbook="reset_swap.yml",
+				server=self,
+				variables={
+					"swap_size": swap_size,
+					"swap_file": "swap",
+					"swap_files_to_remove": swap_files_to_remove,
+				},
+			)
+			ansible.run()
+		except Exception:
+			log_error("Reset swap exception", doc=self)
+
+	def add_glass_file(self):
+		frappe.enqueue_doc(self.doctype, self.name, "_add_glass_file")
+
+	def _add_glass_file(self):
+		try:
+			ansible = Ansible(playbook="glass_file.yml", server=self)
+			ansible.run()
+		except Exception:
+			log_error("Add Glass File Exception", doc=self)
 
 	@frappe.whitelist()
 	def setup_mysqldump(self):
@@ -944,7 +1006,11 @@ class BaseServer(Document, TagHelpers):
 		update_server_tls_certifcate(self, certificate)
 
 	@frappe.whitelist()
-	def show_agent_password(self):
+	def show_agent_version(self) -> str:
+		return self.agent.get_version()["commit"]
+
+	@frappe.whitelist()
+	def show_agent_password(self) -> str:
 		return self.get_password("agent_password")
 
 	@property
@@ -1338,8 +1404,10 @@ class Server(BaseServer):
 		hostname_abbreviation: DF.Data | None
 		ignore_incidents_since: DF.Datetime | None
 		ip: DF.Data | None
+		ipv6: DF.Data | None
 		is_managed_database: DF.Check
 		is_primary: DF.Check
+		is_pyspy_setup: DF.Check
 		is_replication_setup: DF.Check
 		is_self_hosted: DF.Check
 		is_server_prepared: DF.Check
@@ -1373,6 +1441,7 @@ class Server(BaseServer):
 		tags: DF.Table[ResourceTag]
 		team: DF.Link | None
 		title: DF.Data | None
+		use_agent_job_callbacks: DF.Check
 		use_for_build: DF.Check
 		use_for_new_benches: DF.Check
 		use_for_new_sites: DF.Check
@@ -1675,6 +1744,21 @@ class Server(BaseServer):
 			self.status = "Broken"
 			log_error("Fail2ban Setup Exception", server=self.as_dict())
 		self.save()
+
+	@frappe.whitelist()
+	def setup_pyspy(self):
+		frappe.enqueue_doc(self.doctype, self.name, "_setup_pyspy", queue="long")
+
+	def _setup_pyspy(self):
+		try:
+			ansible = Ansible(
+				playbook="setup_pyspy.yml", server=self, user=self._ssh_user(), port=self._ssh_port()
+			)
+			play: AnsiblePlay = ansible.run()
+			self.is_pyspy_setup = play.status == "Success"
+			self.save()
+		except Exception:
+			log_error("Setup PySpy Exception", server=self.as_dict())
 
 	@frappe.whitelist()
 	def setup_replication(self):

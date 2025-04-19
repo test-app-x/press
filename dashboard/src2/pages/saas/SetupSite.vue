@@ -11,7 +11,6 @@
 			<LoginBox
 				v-if="saasProduct"
 				title="Let’s set up your site"
-				subtitle="Setup your default settings for your site"
 				:logo="saasProduct?.logo"
 			>
 				<template v-slot:logo v-if="saasProduct">
@@ -28,13 +27,50 @@
 					</div>
 				</template>
 				<template v-slot:default>
-					<form class="w-full" @submit.prevent="createSite">
-						<FormControl
-							label="Site name (will be used to access your site)"
-							v-model="siteLabel"
-							variant="outline"
-							class="mb-4"
-						/>
+					<form class="w-full space-y-4" @submit.prevent="createSite">
+						<div class="w-full space-y-1.5">
+							<label class="block text-xs text-ink-gray-5">
+								Enter subdomain for your site
+							</label>
+							<div class="col-span-2 flex w-full">
+								<input
+									class="dark:[color-scheme:dark] z-10 h-7 w-full rounded rounded-r-none border border-outline-gray-2 bg-surface-white py-1.5 pl-2 pr-2 text-base text-ink-gray-8 placeholder-ink-gray-4 transition-colors hover:border-outline-gray-3 hover:shadow-sm focus:border-outline-gray-4 focus:bg-surface-white focus:shadow-sm focus:ring-0 focus-visible:ring-2 focus-visible:ring-outline-gray-3"
+									:placeholder="`${saasProduct.name}-site`"
+									v-model="subdomain"
+								/>
+								<div
+									class="flex items-center rounded-r bg-gray-100 px-2 text-base"
+								>
+									.{{ saasProduct.domain }}
+								</div>
+							</div>
+							<div class="mt-1">
+								<div
+									v-if="$resources.subdomainExists.loading"
+									class="text-sm text-gray-600"
+								>
+									Checking...
+								</div>
+								<template
+									v-else-if="
+										!$resources.subdomainExists.error &&
+										$resources.subdomainExists.fetched &&
+										subdomain
+									"
+								>
+									<div
+										v-if="$resources.subdomainExists.data"
+										class="text-sm text-green-600"
+									>
+										{{ subdomain }}.{{ saasProduct.domain }} is available
+									</div>
+									<div v-else class="text-sm text-red-600">
+										{{ subdomain }}.{{ saasProduct.domain }} is not available
+									</div>
+								</template>
+								<ErrorMessage :message="$resources.subdomainExists.error" />
+							</div>
+						</div>
 						<FormControl
 							label="Email address (will be your login ID)"
 							:modelValue="$team.doc.user"
@@ -42,11 +78,6 @@
 							variant="outline"
 							class="mb-4"
 						/>
-						<SaaSSignupFields
-							v-if="saasProductSignupFields.length > 0"
-							:fields="saasProductSignupFields"
-							v-model="signupValues"
-						></SaaSSignupFields>
 						<ErrorMessage
 							class="mt-2"
 							:message="$resources.createSite?.error"
@@ -55,8 +86,13 @@
 							class="mt-8 w-full"
 							variant="solid"
 							type="submit"
+							:disabled="
+								!!$resources.subdomainExists.error ||
+								!$resources.subdomainExists.data ||
+								!subdomain.length
+							"
 							:loading="findingClosestServer || $resources.createSite?.loading"
-							loadingText="Submitting ..."
+							loadingText="Creating site..."
 						>
 							Next
 						</Button>
@@ -75,24 +111,31 @@
 </template>
 <script>
 import { toast } from 'vue-sonner';
+import { debounce } from 'frappe-ui';
 import LoginBox from '../../components/auth/LoginBox.vue';
-import SaaSSignupFields from '../../components/SaaSSignupFields.vue';
+import { validateSubdomain } from '../../utils/site';
+import { DashboardError } from '../../utils/error';
 
 export default {
 	name: 'SignupSetup',
 	props: ['productId'],
 	components: {
 		LoginBox,
-		SaaSSignupFields,
 	},
 	data() {
 		return {
 			progressErrorCount: 0,
 			findingClosestServer: false,
 			closestCluster: null,
-			signupValues: {},
-			siteLabel: '',
+			subdomain: '',
 		};
+	},
+	watch: {
+		subdomain: {
+			handler: debounce(function () {
+				this.$resources.subdomainExists.submit();
+			}, 500),
+		},
 	},
 	resources: {
 		siteRequest() {
@@ -126,8 +169,25 @@ export default {
 				doctype: 'Product Trial',
 				name: this.productId,
 				auto: true,
-				onSuccess: (doc) => {
-					this.siteLabel = doc.default_site_label;
+			};
+		},
+		subdomainExists() {
+			return {
+				url: 'press.api.site.exists',
+				makeParams() {
+					return {
+						domain: this.saasProduct?.domain,
+						subdomain: this.subdomain,
+					};
+				},
+				validate() {
+					const error = validateSubdomain(this.subdomain);
+					if (error) {
+						throw new DashboardError(error);
+					}
+				},
+				transform(data) {
+					return !Boolean(data);
 				},
 			};
 		},
@@ -140,9 +200,8 @@ export default {
 						dn: this.$resources.siteRequest.data.name,
 						method: 'create_site',
 						args: {
-							site_label: this.siteLabel,
+							subdomain: this.subdomain,
 							cluster: this.closestCluster ?? 'Default',
-							signup_values: this.signupValues,
 						},
 					};
 				},
@@ -162,9 +221,6 @@ export default {
 	computed: {
 		saasProduct() {
 			return this.$resources.saasProduct.doc;
-		},
-		saasProductSignupFields() {
-			return this.saasProduct?.signup_fields ?? [];
 		},
 	},
 	methods: {

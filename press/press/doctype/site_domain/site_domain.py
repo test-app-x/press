@@ -12,14 +12,11 @@ from frappe.model.document import Document
 from press.agent import Agent
 from press.api.site import check_dns
 from press.exceptions import (
-	AAAARecordExists,
-	ConflictingCAARecord,
-	ConflictingDNSRecord,
-	MultipleARecords,
-	MultipleCNAMERecords,
+	DNSValidationError,
 )
 from press.overrides import get_permission_query_conditions_for_doctype
 from press.utils import log_error
+from press.utils.dns import create_dns_record
 from press.utils.jobs import has_job_timeout_exceeded
 
 
@@ -59,8 +56,18 @@ class SiteDomain(Document):
 		return None
 
 	def after_insert(self):
-		if not self.default:
-			self.create_tls_certificate()
+		if self.default:
+			return
+
+		if self.has_root_tls_certificate:
+			server = frappe.db.get_value("Site", self.site, "server")
+			proxy_server = frappe.db.get_value("Server", server, "proxy_server")
+
+			agent = Agent(server=proxy_server, server_type="Proxy Server")
+			agent.add_domain_to_upstream(server=server, site=self.site, domain=self.domain)
+			return
+
+		self.create_tls_certificate()
 
 	def validate(self):
 		if self.has_value_changed("redirect_to_primary"):
@@ -69,9 +76,20 @@ class SiteDomain(Document):
 			elif not self.is_new():
 				self.remove_redirect_in_proxy()
 
+	@frappe.whitelist()
+	def create_dns_record(self):
+		site = frappe.get_doc("Site", self.site)
+		if not self.domain.endswith(site.domain):
+			return
+		create_dns_record(site, self.domain)
+
 	@property
 	def default(self):
 		return self.domain == self.site
+
+	@property
+	def has_root_tls_certificate(self):
+		return bool(frappe.db.exists("Root Domain", self.domain.split(".", 1)[1], "name"))
 
 	def setup_redirect_in_proxy(self):
 		site = frappe.get_doc("Site", self.site)
@@ -195,12 +213,47 @@ def process_new_host_job_update(job):
 			frappe.get_doc("Site", job.site).add_domain_to_config(job.host)
 
 
-def update_dns_type():  # noqa: C901
-	domains = frappe.get_all(
-		"Site Domain",
-		filters={"tls_certificate": ("is", "set")},  # Don't query wildcard subdomains
-		fields=["name", "domain", "dns_type", "site"],
+def process_add_domain_to_upstream_job_update(job):
+	request_data = json.loads(job.request_data)
+	domain = request_data.get("domain")
+	domain_status = frappe.get_value("Site Domain", domain, "status")
+
+	updated_status = {
+		"Pending": "Pending",
+		"Running": "In Progress",
+		"Success": "Active",
+		"Failure": "Broken",
+		"Delivery Failure": "Broken",
+	}[job.status]
+
+	if updated_status != domain_status:
+		frappe.db.set_value("Site Domain", domain, "status", updated_status)
+
+	if job.status in ["Failure", "Delivery Failure"]:
+		frappe.db.set_value(
+			"Product Trial Request", {"domain": request_data.get("domain")}, "status", "Error"
+		)
+
+
+def update_dns_type():
+	Domain = frappe.qb.DocType("Site Domain")
+	Certificate = frappe.qb.DocType("TLS Certificate")
+	query = (
+		frappe.qb.from_(Domain)
+		.left_join(Certificate)
+		.on(Domain.tls_certificate == Certificate.name)
+		.where(Domain.tls_certificate.isnotnull())  # Don't query wildcard subdomains
+		.select(
+			Domain.name,
+			Domain.domain,
+			Domain.dns_type,
+			Domain.site,
+			Domain.tls_certificate,
+			Certificate.retry_count,
+		)
 	)
+
+	domains = query.run(as_dict=1)
 	for domain in domains:
 		if has_job_timeout_exceeded():
 			return
@@ -210,20 +263,19 @@ def update_dns_type():  # noqa: C901
 				frappe.db.set_value(
 					"Site Domain", domain.name, "dns_type", response["type"], update_modified=False
 				)
+			if domain.retry_count > 0 and response["matched"]:
+				# In the past we failed to obtain the certificate (likely because of DNS issues).
+				# Since the DNS is now correct, we can retry obtaining the certificate.
+				frappe.db.set_value(
+					"TLS Certificate", domain.tls_certificate, "retry_count", 0, update_modified=False
+				)
+
 			pretty_response = json.dumps(response, indent=4, default=str)
 			frappe.db.set_value(
 				"Site Domain", domain.name, "dns_response", pretty_response, update_modified=False
 			)
 			frappe.db.commit()
-		except AAAARecordExists:
-			pass
-		except ConflictingCAARecord:
-			pass
-		except ConflictingDNSRecord:
-			pass
-		except MultipleARecords:
-			pass
-		except MultipleCNAMERecords:
+		except DNSValidationError:
 			pass
 		except rq.timeouts.JobTimeoutException:
 			return

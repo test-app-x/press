@@ -9,11 +9,11 @@
   "virtual_machine",
   "snapshot_id",
   "status",
+  "expired",
   "column_break_4",
   "cluster",
   "region",
   "volume_id",
-  "created_for_site_update",
   "section_break_41e4",
   "size",
   "start_time",
@@ -21,7 +21,11 @@
   "progress",
   "duration",
   "section_break_12",
-  "mariadb_root_password"
+  "mariadb_root_password",
+  "snapshot_purpose_section",
+  "physical_backup",
+  "column_break_xgrp",
+  "rolling_snapshot"
  ],
  "fields": [
   {
@@ -119,7 +123,8 @@
    "fieldname": "volume_id",
    "fieldtype": "Data",
    "label": "Volume ID",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "duration",
@@ -129,9 +134,33 @@
   },
   {
    "default": "0",
-   "fieldname": "created_for_site_update",
+   "fieldname": "physical_backup",
    "fieldtype": "Check",
-   "label": "Created For Site Update"
+   "in_standard_filter": 1,
+   "label": "Physical Backup"
+  },
+  {
+   "fieldname": "snapshot_purpose_section",
+   "fieldtype": "Section Break",
+   "label": "Snapshot Purpose"
+  },
+  {
+   "fieldname": "column_break_xgrp",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "rolling_snapshot",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Rolling Snapshot"
+  },
+  {
+   "default": "0",
+   "fieldname": "expired",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Expired"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -141,7 +170,7 @@
    "link_fieldname": "database_snapshot"
   }
  ],
- "modified": "2025-01-28 15:28:24.912058",
+ "modified": "2025-04-16 14:48:54.212097",
  "modified_by": "Administrator",
  "module": "Press",
  "name": "Virtual Disk Snapshot",

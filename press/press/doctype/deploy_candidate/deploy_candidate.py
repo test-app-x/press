@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 import frappe
 import frappe.utils
+import semantic_version
 from frappe.core.utils import find
 from frappe.model.document import Document
 from frappe.model.naming import make_autoname
@@ -50,11 +51,14 @@ from press.press.doctype.deploy_candidate.utils import (
 from press.press.doctype.deploy_candidate.validations import PreBuildValidations
 from press.utils import get_current_team, log_error, reconnect_on_failure
 from press.utils.jobs import get_background_jobs, stop_background_job
+from press.utils.webhook import create_webhook_event
 
 # build_duration, pending_duration are Time fields, >= 1 day is invalid
 MAX_DURATION = timedelta(hours=23, minutes=59, seconds=59)
 TRANSITORY_STATES = ["Scheduled", "Pending", "Preparing", "Running"]
 RESTING_STATES = ["Draft", "Success", "Failure"]
+
+DISTUTILS_SUPPORTED_VERSION = semantic_version.SimpleSpec("<3.12")
 
 if typing.TYPE_CHECKING:
 	from rq.job import Job
@@ -73,9 +77,7 @@ class DeployCandidate(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		from press.press.doctype.deploy_candidate_app.deploy_candidate_app import (
-			DeployCandidateApp,
-		)
+		from press.press.doctype.deploy_candidate_app.deploy_candidate_app import DeployCandidateApp
 		from press.press.doctype.deploy_candidate_build_step.deploy_candidate_build_step import (
 			DeployCandidateBuildStep,
 		)
@@ -129,6 +131,7 @@ class DeployCandidate(Document):
 		user_certificate: DF.Code | None
 		user_private_key: DF.Code | None
 		user_public_key: DF.Code | None
+
 		# end: auto-generated types
 
 		build_output_parser: DockerBuildOutputParser | None
@@ -194,7 +197,7 @@ class DeployCandidate(Document):
 					{
 						**job[0],
 						"title": f"Deploying {bench.bench}",
-						"duration": get_job_duration_in_seconds(job[0].duration) if job else 0,
+						"duration": get_job_duration_in_seconds(getattr(job[0], "duration", 0)) if job else 0,
 					}
 				)
 
@@ -1071,6 +1074,7 @@ class DeployCandidate(Document):
 
 			app_packages = []
 			for p in pkgs:
+				p = p.strip()
 				if p in existing_apt_packages:
 					continue
 				existing_apt_packages.add(p)
@@ -1079,7 +1083,30 @@ class DeployCandidate(Document):
 			if not app_packages:
 				continue
 
-			package = dict(package_manager="apt", package=" ".join(app_packages))
+			self._add_packages(app_packages)
+
+	def __prepare_chunks(self, packages: list[str]):
+		"""Chunk packages into groups of 140 characters"""
+		# Start with one empty chunk
+		chunks = [[]]
+		for package in packages:
+			# Appending the package to the last chunk will keep it under 140
+			# Append package to last chunk
+			if len(" ".join(chunks[-1] + [package])) < 140:
+				chunks[-1].append(package)
+			# Appending the package to the last chunk will make it larger than 140
+			# Add package in a new chunk
+			else:
+				if len(package) > 140:
+					raise frappe.ValidationError(
+						f"Package {package} is too long to be added to the Dockerfile"
+					)
+				chunks.append([package])
+		return chunks
+
+	def _add_packages(self, packages: list[str]):
+		for chunk in self.__prepare_chunks(packages):
+			package = dict(package_manager="apt", package=" ".join(chunk))
 			self.append("packages", package)
 
 	def _set_additional_packages(self):
@@ -1110,16 +1137,34 @@ class DeployCandidate(Document):
 			order_by="idx",
 		)
 
+	def check_distutils_support(self, version: str):
+		"""
+		Checks if specified python version supports distutils.
+		"""
+		try:
+			python_version = semantic_version.Version(version)
+		except ValueError:
+			python_version = semantic_version.Version(f"{version}.0")
+
+		return python_version in DISTUTILS_SUPPORTED_VERSION
+
 	def _generate_dockerfile(self):
 		dockerfile = os.path.join(self.build_directory, "Dockerfile")
 		with open(dockerfile, "w") as f:
 			dockerfile_template = "press/docker/Dockerfile"
-
+			is_distutils_supported = True
 			for d in self.dependencies:
+				if d.dependency == "PYTHON_VERSION":
+					is_distutils_supported = self.check_distutils_support(d.version)
+
 				if d.dependency == "BENCH_VERSION" and d.version == "5.2.1":
 					dockerfile_template = "press/docker/Dockerfile_Bench_5_2_1"
 
-			content = frappe.render_template(dockerfile_template, {"doc": self}, is_path=True)
+			content = frappe.render_template(
+				dockerfile_template,
+				{"doc": self, "remove_distutils": not is_distutils_supported},
+				is_path=True,
+			)
 			f.write(content)
 			return content
 
@@ -1408,6 +1453,9 @@ class DeployCandidate(Document):
 				doctype=self.doctype,
 				docname=self.name,
 			)
+
+		if self.has_value_changed("status") and self.team != "Administrator":
+			create_webhook_event("Bench Deploy Status Update", self, self.team)
 
 	def get_dependency_version(self, dependency: str, as_env: bool = False):
 		if dependency.islower():

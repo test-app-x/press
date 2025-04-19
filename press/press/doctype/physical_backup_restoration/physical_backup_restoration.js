@@ -9,9 +9,10 @@ frappe.ui.form.on('Physical Backup Restoration', {
 
 		[
 			[__('Start'), 'execute', frm.doc.status === 'Pending', false],
-			[__('Force Continue'), 'force_continue', true],
+			[__('Force Continue'), 'force_continue', true, true],
+			[__('Force Fail'), 'force_fail', frm.doc.status === 'Running', true],
 			[__('Cleanup'), 'cleanup', frm.doc.status === 'Failure', true],
-			[__('Force Fail'), 'force_fail', frm.doc.status === 'Running', false],
+			[__('Retry'), 'retry', frm.doc.status === 'Failure', false],
 		].forEach(([label, method, condition, grouped]) => {
 			if (condition) {
 				frm.add_custom_button(
@@ -19,7 +20,13 @@ frappe.ui.form.on('Physical Backup Restoration', {
 					() => {
 						frappe.confirm(
 							`Are you sure you want to ${label.toLowerCase()}?`,
-							() => frm.call(method).then(() => frm.refresh()),
+							() =>
+								frm
+									.call(method, {
+										freeze: true,
+										freeze_message: __('Please wait...'),
+									})
+									.then(() => frm.refresh()),
 						);
 					},
 					grouped ? __('Actions') : null,

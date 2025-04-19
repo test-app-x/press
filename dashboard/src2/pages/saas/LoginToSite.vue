@@ -9,12 +9,10 @@
 	<div class="flex h-screen overflow-hidden sm:bg-gray-50" v-else>
 		<div class="w-full overflow-auto">
 			<LoginBox
-				v-if="this.$resources?.siteRequest?.doc?.status === 'Site Created'"
-				title="Logging in to site"
-				:subtitle="
-					this.$resources?.siteRequest?.doc?.site_label ||
-					this.$resources?.siteRequest?.doc?.site
-				"
+				v-if="$resources?.siteRequest?.doc?.status === 'Site Created'"
+				title="Site created successfully"
+				:subtitle="`Your trial site is ready at
+					${$resources?.siteRequest?.doc?.domain || $resources?.siteRequest?.doc?.site}`"
 			>
 				<template v-slot:logo v-if="saasProduct">
 					<div class="mx-auto flex items-center space-x-2">
@@ -29,18 +27,22 @@
 						</span>
 					</div>
 				</template>
-				<div
-					class="flex h-40 items-center justify-center"
-					v-if="
-						this.$resources?.siteRequest?.getLoginSid.loading ||
-						isRedirectingToSite
-					"
-				>
-					<Spinner class="mr-2 w-4" />
-					<p class="text-base text-gray-800">Please wait for a moment</p>
+				<div>
+					<div
+						class="mb-4 mt-16 flex flex-col items-center justify-center space-y-4"
+					>
+						<Button
+							variant="solid"
+							class="w-2/5"
+							icon-right="external-link"
+							@click="loginToSite"
+							:loading="this.$resources?.siteRequest?.getLoginSid.loading"
+						>
+							Log In
+						</Button>
+					</div>
 				</div>
 				<ErrorMessage
-					v-if="!isRedirectingToSite"
 					class="w-full text-center"
 					:message="this.$resources?.siteRequest?.getLoginSid.error"
 				/>
@@ -56,7 +58,7 @@
 				v-else-if="this.$resources?.siteRequest?.doc?.status === 'Error'"
 				title="Site creation failed"
 				:subtitle="
-					this.$resources?.siteRequest?.doc?.site_label ||
+					this.$resources?.siteRequest?.doc?.domain ||
 					this.$resources?.siteRequest?.doc?.site
 				"
 			>
@@ -75,17 +77,16 @@
 				</template>
 				<template v-slot:default>
 					<div class="flex h-40 flex-col items-center justify-center px-10">
-						<!-- <Button variant="outline" @click="signupForCurrentProduct"
-							>Signup for new site</Button
-						>
-						<p class="my-4 text-gray-600">or,</p> -->
-						<p class="text-center text-base leading-5 text-gray-800">
-							Contact at
-							<a href="mailto:support@frappe.io" class="underline"
-								>support@frappe.io</a
-							><br />
-							to resolve the issue
-						</p>
+						<div class="text-center text-base leading-5 text-gray-800">
+							<p>It looks like something went wrong</p>
+							<p>
+								Contact
+								<a href="mailto:support@frappe.io" class="underline"
+									>support@frappe.io</a
+								><br />
+								to resolve the issue
+							</p>
+						</div>
 					</div>
 				</template>
 				<template v-slot:footer>
@@ -100,7 +101,7 @@
 				v-else
 				title="Creating your site"
 				:subtitle="
-					this.$resources?.siteRequest?.doc?.site_label ||
+					this.$resources?.siteRequest?.doc?.domain ||
 					this.$resources?.siteRequest?.doc?.site
 				"
 			>
@@ -153,7 +154,6 @@ export default {
 		return {
 			product_trial_request: this.$route.query.product_trial_request,
 			progressCount: 0,
-			isRedirectingToSite: false,
 			currentBuildStep: 'Preparing for build',
 		};
 	},
@@ -176,13 +176,9 @@ export default {
 				onSuccess(doc) {
 					if (
 						doc.status == 'Wait for Site' ||
-						doc.status == 'Completing Setup Wizard'
+						doc.status == 'Prefilling Setup Wizard'
 					) {
 						this.$resources.siteRequest.getProgress.reload();
-					}
-
-					if (doc.status == 'Site Created') {
-						this.loginToSite();
 					}
 				},
 				whitelistedMethods: {
@@ -195,12 +191,23 @@ export default {
 							};
 						},
 						onSuccess: (data) => {
+							const currentStepMap = {
+								'Wait for Site': 'Creating your site',
+								'New Site': 'Creating your site',
+								'Prefilling Setup Wizard': 'Setting up your site',
+								'Update Site Configuration': 'Setting up your site',
+								'Enable Scheduler': 'Setting up your site',
+								'Bench Setup NGINX': 'Setting up your site',
+								'Reload NGINX': 'Setting up your site',
+							};
+
 							this.currentBuildStep =
-								data.current_step || this.currentBuildStep;
+								currentStepMap[data.current_step] ||
+								data.current_step ||
+								this.currentBuildStep;
 							this.progressCount += 1;
-							if (data.progress == 100) {
-								this.loginToSite();
-							} else if (
+
+							if (
 								!(
 									this.$resources.siteRequest.getProgress.error &&
 									this.progressCount <= 10
@@ -216,13 +223,12 @@ export default {
 					getLoginSid: {
 						method: 'get_login_sid',
 						onSuccess(data) {
-							let sid = data;
-							let redirectRoute =
+							const sid = data;
+							const redirectRoute =
 								this.$resources?.saasProduct?.doc?.redirect_to_after_login ??
 								'/desk';
-							let loginURL = `https://${this.$resources.siteRequest.doc.site}${redirectRoute}?sid=${sid}`;
-							this.isRedirectingToSite = true;
-							window.open(loginURL, '_self');
+							const loginURL = `https://${this.$resources.siteRequest.doc.domain}${redirectRoute}?sid=${sid}`;
+							window.open(loginURL, '_blank');
 						},
 					},
 				},
@@ -237,12 +243,6 @@ export default {
 	methods: {
 		loginToSite() {
 			this.$resources.siteRequest.getLoginSid.submit();
-		},
-		signupForCurrentProduct() {
-			this.$router.push({
-				name: 'SignupSetup',
-				params: { productId: this.productId },
-			});
 		},
 	},
 };

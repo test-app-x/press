@@ -252,7 +252,19 @@ const paymentModeOptions = [
 			h(DropdownItem, {
 				label: 'Paid by Partner',
 				active: team.doc.payment_mode === 'Paid by Partner',
-				onClick: () => updatePaymentMode('Paid By Partner'),
+				onClick: () =>
+					confirmDialog({
+						title: 'Confirm Payment Mode',
+						message: `By changing the payment mode to <strong>Paid by Partner</strong>, following details will be shared with your partner: <br><br><li>Site/Server name</li> <li>Plan name</li><li>Number of days site/server is active</li><br>Are you sure you want to proceed?`,
+						primaryAction: {
+							label: 'Change Payment Mode',
+							variant: 'solid',
+							onClick: ({ hide }) => {
+								updatePaymentMode('Paid By Partner');
+								hide();
+							},
+						},
+					}),
 			}),
 	},
 	{
@@ -302,7 +314,7 @@ function payUnpaidInvoices() {
 			});
 		}
 	} else {
-		let invoice = _unpaidInvoices;
+		let invoice = _unpaidInvoices[0];
 		if (invoice.stripe_invoice_url && team.doc.payment_mode === 'Card') {
 			window.open(
 				`/api/method/press.api.client.run_doc_method?dt=Invoice&dn=${invoice.name}&method=stripe_payment_url`,
@@ -328,8 +340,8 @@ function updatePaymentMode(mode) {
 	} else if (mode === 'Card' && !team.doc.payment_method) {
 		showMessage.value = true;
 		showAddCardDialog.value = true;
-	} else if (mode === 'Paid By Partner') {
-		if (unpaidInvoices.data.length > 0) {
+	} else if (mode === 'Paid By Partner' && Boolean(unpaidInvoices.data.length > 0)) {
+		if (unpaidInvoices.data) {
 			payUnpaidInvoices();
 			return;
 		}
@@ -338,6 +350,7 @@ function updatePaymentMode(mode) {
 				() => import('./FinalizeInvoicesDialog.vue'),
 			);
 			renderDialog(h(finalizeInvoicesDialog));
+			return;
 		}
 	}
 	if (!changePaymentMode.loading) changePaymentMode.submit({ mode });

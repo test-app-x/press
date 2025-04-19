@@ -88,10 +88,10 @@
 					<div class="mt-2">
 						<a
 							class="flex items-center text-base font-medium underline"
-							:href="`https://${trialSite.name}`"
+							:href="`https://${trialSite.host_name || trialSite.name}`"
 							target="_blank"
 						>
-							https://{{ trialSite.name }}
+							https://{{ trialSite.host_name || trialSite.name }}
 							<i-lucide-external-link class="ml-1 h-3.5 w-3.5 text-gray-800" />
 						</a>
 					</div>
@@ -185,9 +185,9 @@
 							<!-- Automated Billing Section -->
 							<div v-if="isAutomatedBilling">
 								<!-- Stripe Card -->
-								<StripeCard2
-									@complete="onAddCardSuccess"
-									:withoutAddress="true"
+								<CardForm
+									@success="onAddCardSuccess"
+									:disableAddressForm="true"
 								/>
 							</div>
 							<!-- Purchase Prepaid Credit -->
@@ -244,9 +244,6 @@ export default {
 	name: 'Onboarding',
 	emits: ['payment-mode-added'],
 	components: {
-		StripeCard2: defineAsyncComponent(
-			() => import('../components/StripeCard.vue'),
-		),
 		UpdateBillingDetailsForm: defineAsyncComponent(
 			() => import('./UpdateBillingDetailsForm.vue'),
 		),
@@ -261,6 +258,9 @@ export default {
 		),
 		AlertBanner: defineAsyncComponent(() => import('./AlertBanner.vue')),
 		TextInsideCircle,
+		CardForm: defineAsyncComponent(
+			() => import('../components/billing/CardForm.vue'),
+		),
 	},
 	data() {
 		return {

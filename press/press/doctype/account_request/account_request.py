@@ -60,6 +60,7 @@ class AccountRequest(Document):
 		state: DF.Data | None
 		subdomain: DF.Data | None
 		team: DF.Data | None
+		unsubscribed_from_drip_emails: DF.Check
 		url_args: DF.Code | None
 	# end: auto-generated types
 
@@ -146,6 +147,8 @@ class AccountRequest(Document):
 
 	def reset_otp(self):
 		self.otp = generate_otp()
+		if frappe.conf.developer_mode and frappe.local.dev_server:
+			self.otp = 111111
 		self.save(ignore_permissions=True)
 
 	@frappe.whitelist()
@@ -223,13 +226,30 @@ class AccountRequest(Document):
 			now=True,
 		)
 
+	def send_login_mail(self):
+		if frappe.conf.developer_mode and frappe.local.dev_server:
+			print(rf"\Login OTP for {self.email}:")
+			print(self.otp)
+			print()
+			return
+
+		subject = f"{self.otp} - OTP for Frappe Cloud Login"
+		args = {
+			"otp": self.otp,
+		}
+		template = "login_otp"
+
+		frappe.sendmail(
+			recipients=self.email,
+			subject=subject,
+			template=template,
+			args=args,
+			now=True,
+		)
+
 	def get_verification_url(self):
 		if self.saas:
 			return get_url(f"/api/method/press.api.saas.validate_account_request?key={self.request_key}")
-		if self.product_trial:
-			return get_url(
-				f"/dashboard/saas/{self.product_trial}/oauth?key={self.request_key}&email={self.email}"
-			)
 		return get_url(f"/dashboard/setup-account/{self.request_key}")
 
 	@property
